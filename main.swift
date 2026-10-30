@@ -44,18 +44,26 @@ func sha256Hex(_ s: String) -> String {
 final class Router {
     private var cookie: String = ""
 
-    private func send(_ req: URLRequest) -> (Int, [String: String], Data)? {
+    private func send(_ req: URLRequest) -> (Int, [String: String], Data, String?)? {
         var r = req
         if !cookie.isEmpty { r.setValue(cookie, forHTTPHeaderField: "Cookie") }
         let sema = DispatchSemaphore(value: 0)
-        var out: (Int, [String: String], Data)?
-        URLSession.shared.dataTask(with: r) { data, resp, _ in
+        var out: (Int, [String: String], Data, String?)?
+        URLSession.shared.dataTask(with: r) { data, resp, error in
             if let http = resp as? HTTPURLResponse {
                 var headers: [String: String] = [:]
                 for (k, v) in http.allHeaderFields {
                     headers[String(describing: k).lowercased()] = String(describing: v)
                 }
-                out = (http.statusCode, headers, data ?? Data())
+                out = (http.statusCode, headers, data ?? Data(), nil)
+            } else if let error {
+                let desc: String
+                if let urlError = error as? URLError, urlError.code == .notConnectedToInternet {
+                    desc = "the Mac cannot reach the local network — check that Local Network access in System Settings → Privacy & Security → Local Network is enabled for this app (URLError -1009)"
+                } else {
+                    desc = "\(error)"
+                }
+                out = (-1, [:], Data(), desc)
             }
             sema.signal()
         }.resume()
@@ -65,12 +73,14 @@ final class Router {
 
     func login() throws {
         guard let url = URL(string: "\(routerHost)/auth") else { throw E.badURL }
-        guard let (code, headers, _) = send(URLRequest(url: url)) else {
+        guard let (code, headers, _, errDesc) = send(URLRequest(url: url)) else {
             FileHandle.standardError.write("auth: no response\n".data(using: .utf8)!); throw E.authFailed
         }
         if code == 200 { return } // shared cookie jar already has a valid session
         guard code == 401, let realm = headers["x-ndm-realm"], let challenge = headers["x-ndm-challenge"] else {
-            FileHandle.standardError.write("auth: unexpected GET /auth: code=\(code)\n".data(using: .utf8)!); throw E.authFailed
+            let m = "auth: unexpected GET /auth: code=\(code)\(code == -1 ? " (\(errDesc ?? ""))" : "")\n"
+            FileHandle.standardError.write(m.data(using: .utf8)!)
+            throw E.requestFailedMsg("auth failed: unexpected GET /auth, code=\(code)" + (code == -1 ? " — \(errDesc ?? "")" : ""))
         }
         if let sc = headers["set-cookie"] { cookie = sc.components(separatedBy: ";").first ?? "" }
         guard let password = routerPassword() else { throw E.noPassword }
@@ -81,9 +91,13 @@ final class Router {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: ["login": routerLogin, "password": sha])
         let resp = send(req)
-        guard let resp, resp.0 == 200 else {
-            FileHandle.standardError.write("auth: POST /auth failed: code=\(String(describing: resp?.0)) body=\(String(data: resp?.2 ?? Data(), encoding: .utf8) ?? "")\n".data(using: .utf8)!)
-            throw E.authFailed
+        guard let resp = resp, resp.0 == 200 else {
+            let body = String(data: resp?.2 ?? Data(), encoding: .utf8) ?? ""
+            FileHandle.standardError.write("auth: POST /auth failed: code=\(String(describing: resp?.0)) body=\(body)\n".data(using: .utf8)!)
+            if resp?.0 == -1, let errDesc = resp?.3 {
+                throw E.requestFailedMsg("auth failed — \(errDesc)")
+            }
+            throw E.requestFailedMsg("auth failed: HTTP \(resp?.0 ?? -1) \(body)")
         }
         let h2 = resp.1
         if let sc = h2["set-cookie"] { cookie = sc.components(separatedBy: ";").first ?? cookie }
@@ -95,7 +109,7 @@ final class Router {
         var data: Data?
         for _ in 0..<2 {
             try loginIfNeeded()
-            if let (c, _, d) = send(URLRequest(url: url)) { code = c; data = d }
+            if let (c, _, d, _) = send(URLRequest(url: url)) { code = c; data = d }
             if code == 200 { break }
             authed = false // session may have expired — re-authenticate once
         }

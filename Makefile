@@ -9,6 +9,7 @@ bundle: build
 	cp media/AppIcon.icns ./dist/KeeneticTray.app/Contents/Resources/AppIcon.icns
 	cp media/router.svg ./dist/KeeneticTray.app/Contents/Resources/router.svg
 	cp com.keenetic.tray.plist ./dist/KeeneticTray.app/Contents/Resources/com.keenetic.tray.plist
+	codesign --force --deep -s - ./dist/KeeneticTray.app
 
 install: bundle
 	rm -rf /Applications/KeeneticTray.app

@@ -24,5 +24,7 @@
     <true/>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>KeeneticTray talks to your Keenetic router (192.168.1.1) to manage connection policies of clients on your local network.</string>
 </dict>
 </plist>
